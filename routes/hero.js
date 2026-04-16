@@ -1,16 +1,25 @@
-const router = require('express').Router();
-const path = require('path');
-const fs = require('fs');
-const Hero = require('../models/Hero');
-const { protect } = require('../middleware/auth');
-const { createUploader } = require('../config/upload');
+const router = require("express").Router();
+const path = require("path");
+const fs = require("fs");
+const Hero = require("../models/Hero");
+const { protect } = require("../middleware/auth");
+const { createUploader } = require("../config/upload");
 
-const upload = createUploader('hero');
+// Ensure createUploader config allows video MIME types (mp4, webm, etc.)
+const upload = createUploader("hero", true);
 
-// ─── PUBLIC ───────────────────────────────────────────────────────────────────
+// Helper to delete files safely
+const deleteFile = (filePath) => {
+  if (filePath) {
+    const absolutePath = path.join(__dirname, "..", filePath);
+    if (fs.existsSync(absolutePath)) fs.unlinkSync(absolutePath);
+  }
+};
 
-// GET /api/hero  →  active hero content for the website
-router.get('/', async (req, res) => {
+// ─── PROTECTED (dashboard) ────────────────────────────────────────────────────
+
+// // GET /api/hero  →  active hero content for the website
+router.get("/", async (req, res) => {
   try {
     const hero = await Hero.findOne({ isActive: true }).sort({ updatedAt: -1 });
     res.json({ success: true, data: hero });
@@ -19,10 +28,8 @@ router.get('/', async (req, res) => {
   }
 });
 
-// ─── PROTECTED (dashboard) ────────────────────────────────────────────────────
-
-// GET /api/hero/all  →  all hero records (for dashboard list)
-router.get('/all', protect, async (req, res) => {
+// // GET /api/hero/all  →  all hero records (for dashboard list)
+router.get("/all", protect, async (req, res) => {
   try {
     const heroes = await Hero.find().sort({ updatedAt: -1 });
     res.json({ success: true, data: heroes });
@@ -31,75 +38,123 @@ router.get('/all', protect, async (req, res) => {
   }
 });
 
-// POST /api/hero  →  create new hero section
-router.post('/', protect, upload.single('backgroundImage'), async (req, res) => {
-  try {
-    const { heading, subheading, ctaText, ctaLink, isActive } = req.body;
-    const imageUrl = req.file ? `/uploads/hero/${req.file.filename}` : undefined;
+// POST /api/hero
+router.post(
+  "/",
+  protect,
+  upload.fields([
+    { name: "backgroundImage", maxCount: 1 },
+    { name: "backgroundVideo", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const { heading, subheading, ctaText, ctaLink, isActive } = req.body;
 
-    // If setting active, deactivate others
-    if (isActive === 'true' || isActive === true) {
-      await Hero.updateMany({}, { isActive: false });
-    }
+      let imageUrl = req.files["backgroundImage"]
+        ? `/uploads/hero/${req.files["backgroundImage"][0].filename}`
+        : undefined;
+      let videoUrl = req.files["backgroundVideo"]
+        ? `/uploads/hero/${req.files["backgroundVideo"][0].filename}`
+        : undefined;
 
-    const hero = await Hero.create({
-      heading, subheading, ctaText, ctaLink,
-      backgroundImage: imageUrl,
-      isActive: isActive === 'true' || isActive === true,
-    });
-    res.status(201).json({ success: true, data: hero });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
-
-// PUT /api/hero/:id  →  update hero section
-router.put('/:id', protect, upload.single('backgroundImage'), async (req, res) => {
-  try {
-    const hero = await Hero.findById(req.params.id);
-    if (!hero) return res.status(404).json({ success: false, message: 'Hero not found' });
-
-    const { heading, subheading, ctaText, ctaLink, isActive } = req.body;
-
-    if (req.file) {
-      // Remove old image
-      if (hero.backgroundImage) {
-        const old = path.join(__dirname, '..', hero.backgroundImage);
-        if (fs.existsSync(old)) fs.unlinkSync(old);
+      // Enforce mutual exclusivity: if both are sent, prioritize video
+      if (videoUrl && imageUrl) {
+        deleteFile(imageUrl); // Delete the extra file from server
+        imageUrl = undefined;
       }
-      hero.backgroundImage = `/uploads/hero/${req.file.filename}`;
+
+      if (isActive === "true" || isActive === true) {
+        await Hero.updateMany({}, { isActive: false });
+      }
+
+      const hero = await Hero.create({
+        heading,
+        subheading,
+        ctaText,
+        ctaLink,
+        backgroundImage: imageUrl,
+        backgroundVideo: videoUrl,
+        mediaType: videoUrl ? "video" : "image",
+        isActive: isActive === "true" || isActive === true,
+      });
+
+      res.status(201).json({ success: true, data: hero });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
     }
+  },
+);
 
-    if (isActive === 'true' || isActive === true) {
-      await Hero.updateMany({ _id: { $ne: hero._id } }, { isActive: false });
-      hero.isActive = true;
-    } else if (isActive === 'false' || isActive === false) {
-      hero.isActive = false;
+// PUT /api/hero/:id
+router.put(
+  "/:id",
+  protect,
+  upload.fields([
+    { name: "backgroundImage", maxCount: 1 },
+    { name: "backgroundVideo", maxCount: 1 },
+  ]),
+  async (req, res) => {
+    try {
+      const hero = await Hero.findById(req.params.id);
+      if (!hero)
+        return res
+          .status(404)
+          .json({ success: false, message: "Hero not found" });
+
+      const { heading, subheading, ctaText, ctaLink, isActive } = req.body;
+
+      const newImage = req.files["backgroundImage"]?.[0]?.filename;
+      const newVideo = req.files["backgroundVideo"]?.[0]?.filename;
+
+      if (newImage || newVideo) {
+        // 1. Delete ALL old media files
+        deleteFile(hero.backgroundImage);
+        deleteFile(hero.backgroundVideo);
+
+        // 2. Set new values (Video takes priority if both are uploaded)
+        if (newVideo) {
+          hero.backgroundVideo = `/uploads/hero/${newVideo}`;
+          hero.backgroundImage = null;
+          hero.mediaType = "video";
+        } else {
+          hero.backgroundImage = `/uploads/hero/${newImage}`;
+          hero.backgroundVideo = null;
+          hero.mediaType = "image";
+        }
+      }
+
+      if (isActive === "true" || isActive === true) {
+        await Hero.updateMany({ _id: { $ne: hero._id } }, { isActive: false });
+        hero.isActive = true;
+      }
+
+      hero.heading = heading ?? hero.heading;
+      hero.subheading = subheading ?? hero.subheading;
+      hero.ctaText = ctaText ?? hero.ctaText;
+      hero.ctaLink = ctaLink ?? hero.ctaLink;
+
+      await hero.save();
+      res.json({ success: true, data: hero });
+    } catch (err) {
+      res.status(500).json({ success: false, message: err.message });
     }
-
-    hero.heading    = heading    ?? hero.heading;
-    hero.subheading = subheading ?? hero.subheading;
-    hero.ctaText    = ctaText    ?? hero.ctaText;
-    hero.ctaLink    = ctaLink    ?? hero.ctaLink;
-
-    await hero.save();
-    res.json({ success: true, data: hero });
-  } catch (err) {
-    res.status(500).json({ success: false, message: err.message });
-  }
-});
+  },
+);
 
 // DELETE /api/hero/:id
-router.delete('/:id', protect, async (req, res) => {
+router.delete("/:id", protect, async (req, res) => {
   try {
     const hero = await Hero.findByIdAndDelete(req.params.id);
-    if (!hero) return res.status(404).json({ success: false, message: 'Hero not found' });
+    if (!hero)
+      return res
+        .status(404)
+        .json({ success: false, message: "Hero not found" });
 
-    if (hero.backgroundImage) {
-      const p = path.join(__dirname, '..', hero.backgroundImage);
-      if (fs.existsSync(p)) fs.unlinkSync(p);
-    }
-    res.json({ success: true, message: 'Hero deleted' });
+    // Clean up any files associated with this record
+    deleteFile(hero.backgroundImage);
+    deleteFile(hero.backgroundVideo);
+
+    res.json({ success: true, message: "Hero deleted" });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
