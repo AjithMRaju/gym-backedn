@@ -64,6 +64,7 @@ router.post(
     const { email, password } = req.body;
     try {
       const admin = await Admin.findOne({ email });
+
       if (!admin || !(await admin.matchPassword(password))) {
         return res
           .status(401)
