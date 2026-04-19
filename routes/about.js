@@ -1,9 +1,7 @@
 const router = require('express').Router();
-const path = require('path');
-const fs = require('fs');
 const About = require('../models/About');
 const { protect } = require('../middleware/auth');
-const { createUploader } = require('../config/upload');
+const { createUploader, deleteFromCloudinary } = require('../config/upload');
 
 const upload = createUploader('about');
 
@@ -32,7 +30,7 @@ router.get('/all', protect, async (req, res) => {
 router.post('/', protect, upload.single('image'), async (req, res) => {
   try {
     const { title, description, mission, vision, stats, isActive } = req.body;
-    const imageUrl = req.file ? `/uploads/about/${req.file.filename}` : undefined;
+    const imageUrl = req.file ? req.file.path : undefined; // Cloudinary URL
 
     let parsedStats = [];
     if (stats) {
@@ -61,11 +59,8 @@ router.put('/:id', protect, upload.single('image'), async (req, res) => {
     const { title, description, mission, vision, stats, isActive } = req.body;
 
     if (req.file) {
-      if (about.image) {
-        const old = path.join(__dirname, '..', about.image);
-        if (fs.existsSync(old)) fs.unlinkSync(old);
-      }
-      about.image = `/uploads/about/${req.file.filename}`;
+      if (about.image) await deleteFromCloudinary(about.image); // delete old from Cloudinary
+      about.image = req.file.path; // Cloudinary URL
     }
 
     if (isActive === 'true') {
@@ -93,10 +88,9 @@ router.delete('/:id', protect, async (req, res) => {
   try {
     const about = await About.findByIdAndDelete(req.params.id);
     if (!about) return res.status(404).json({ success: false, message: 'About not found' });
-    if (about.image) {
-      const p = path.join(__dirname, '..', about.image);
-      if (fs.existsSync(p)) fs.unlinkSync(p);
-    }
+
+    if (about.image) await deleteFromCloudinary(about.image); // delete from Cloudinary
+
     res.json({ success: true, message: 'About deleted' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
