@@ -1,9 +1,7 @@
 const router = require('express').Router();
-const path = require('path');
-const fs = require('fs');
 const Service = require('../models/Service');
 const { protect } = require('../middleware/auth');
-const { createUploader } = require('../config/upload');
+const { createUploader, deleteFromCloudinary } = require('../config/upload');
 
 const upload = createUploader('services');
 
@@ -46,7 +44,7 @@ router.get('/admin/all', protect, async (req, res) => {
 router.post('/', protect, upload.single('image'), async (req, res) => {
   try {
     const { title, description, icon, price, duration, order, isActive } = req.body;
-    const imageUrl = req.file ? `/uploads/services/${req.file.filename}` : undefined;
+    const imageUrl = req.file ? req.file.path : undefined; // Cloudinary URL
 
     const service = await Service.create({
       title, description, icon, price, duration,
@@ -69,11 +67,8 @@ router.put('/:id', protect, upload.single('image'), async (req, res) => {
     const { title, description, icon, price, duration, order, isActive } = req.body;
 
     if (req.file) {
-      if (service.image) {
-        const old = path.join(__dirname, '..', service.image);
-        if (fs.existsSync(old)) fs.unlinkSync(old);
-      }
-      service.image = `/uploads/services/${req.file.filename}`;
+      if (service.image) await deleteFromCloudinary(service.image); // delete old from Cloudinary
+      service.image = req.file.path; // Cloudinary URL
     }
 
     service.title       = title       ?? service.title;
@@ -96,17 +91,16 @@ router.delete('/:id', protect, async (req, res) => {
   try {
     const service = await Service.findByIdAndDelete(req.params.id);
     if (!service) return res.status(404).json({ success: false, message: 'Service not found' });
-    if (service.image) {
-      const p = path.join(__dirname, '..', service.image);
-      if (fs.existsSync(p)) fs.unlinkSync(p);
-    }
+
+    if (service.image) await deleteFromCloudinary(service.image); // delete from Cloudinary
+
     res.json({ success: true, message: 'Service deleted' });
   } catch (err) {
     res.status(500).json({ success: false, message: err.message });
   }
 });
 
-// PUT /api/services/reorder  →  bulk reorder
+// PUT /api/services/admin/reorder  →  bulk reorder
 router.put('/admin/reorder', protect, async (req, res) => {
   // body: [{ id, order }, ...]
   try {

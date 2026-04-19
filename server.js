@@ -10,9 +10,19 @@ const app = express();
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
-const origins = process.env.ALLOWED_ORIGINS;
+const allowedOrigins = [
+  "https://gym-admin-tawny.vercel.app",
+  "http://localhost:3000",
+];
 app.use(
-  cors({ origin: origins === "*" || !origins ? "*" : origins.split(",") }),
+  cors({
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (allowedOrigins.includes(origin)) return callback(null, true);
+      callback(new Error(`CORS blocked: ${origin}`));
+    },
+    credentials: true,
+  }),
 );
 app.use(morgan("dev"));
 app.use(express.json({ limit: "100mb" }));

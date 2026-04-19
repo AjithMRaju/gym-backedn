@@ -1,24 +1,13 @@
 const router = require("express").Router();
-const path = require("path");
-const fs = require("fs");
 const Hero = require("../models/Hero");
 const { protect } = require("../middleware/auth");
-const { createUploader } = require("../config/upload");
+const { createUploader, deleteFromCloudinary } = require("../config/upload");
 
-// Ensure createUploader config allows video MIME types (mp4, webm, etc.)
-const upload = createUploader("hero", true);
+const upload = createUploader("hero", true); // true = allow video
 
-// Helper to delete files safely
-const deleteFile = (filePath) => {
-  if (filePath) {
-    const absolutePath = path.join(__dirname, "..", filePath);
-    if (fs.existsSync(absolutePath)) fs.unlinkSync(absolutePath);
-  }
-};
+// ─── PUBLIC ───────────────────────────────────────────────────────────────────
 
-// ─── PROTECTED (dashboard) ────────────────────────────────────────────────────
-
-// // GET /api/hero  →  active hero content for the website
+// GET /api/hero  →  active hero content for the website
 router.get("/", async (req, res) => {
   try {
     const hero = await Hero.findOne({ isActive: true }).sort({ updatedAt: -1 });
@@ -28,7 +17,7 @@ router.get("/", async (req, res) => {
   }
 });
 
-// // GET /api/hero/all  →  all hero records (for dashboard list)
+// GET /api/hero/all  →  all hero records (for dashboard list)
 router.get("/all", protect, async (req, res) => {
   try {
     const heroes = await Hero.find().sort({ updatedAt: -1 });
@@ -51,15 +40,15 @@ router.post(
       const { heading, subheading, ctaText, ctaLink, isActive } = req.body;
 
       let imageUrl = req.files["backgroundImage"]
-        ? `/uploads/hero/${req.files["backgroundImage"][0].filename}`
+        ? req.files["backgroundImage"][0].path // Cloudinary URL
         : undefined;
       let videoUrl = req.files["backgroundVideo"]
-        ? `/uploads/hero/${req.files["backgroundVideo"][0].filename}`
+        ? req.files["backgroundVideo"][0].path // Cloudinary URL
         : undefined;
 
       // Enforce mutual exclusivity: if both are sent, prioritize video
       if (videoUrl && imageUrl) {
-        deleteFile(imageUrl); // Delete the extra file from server
+        await deleteFromCloudinary(imageUrl, "image"); // delete the extra from Cloudinary
         imageUrl = undefined;
       }
 
@@ -97,27 +86,25 @@ router.put(
     try {
       const hero = await Hero.findById(req.params.id);
       if (!hero)
-        return res
-          .status(404)
-          .json({ success: false, message: "Hero not found" });
+        return res.status(404).json({ success: false, message: "Hero not found" });
 
       const { heading, subheading, ctaText, ctaLink, isActive } = req.body;
 
-      const newImage = req.files["backgroundImage"]?.[0]?.filename;
-      const newVideo = req.files["backgroundVideo"]?.[0]?.filename;
+      const newImage = req.files["backgroundImage"]?.[0]?.path; // Cloudinary URL
+      const newVideo = req.files["backgroundVideo"]?.[0]?.path; // Cloudinary URL
 
       if (newImage || newVideo) {
-        // 1. Delete ALL old media files
-        deleteFile(hero.backgroundImage);
-        deleteFile(hero.backgroundVideo);
+        // 1. Delete ALL old media files from Cloudinary
+        if (hero.backgroundImage) await deleteFromCloudinary(hero.backgroundImage, "image");
+        if (hero.backgroundVideo) await deleteFromCloudinary(hero.backgroundVideo, "video");
 
         // 2. Set new values (Video takes priority if both are uploaded)
         if (newVideo) {
-          hero.backgroundVideo = `/uploads/hero/${newVideo}`;
+          hero.backgroundVideo = newVideo;
           hero.backgroundImage = null;
           hero.mediaType = "video";
         } else {
-          hero.backgroundImage = `/uploads/hero/${newImage}`;
+          hero.backgroundImage = newImage;
           hero.backgroundVideo = null;
           hero.mediaType = "image";
         }
@@ -128,10 +115,10 @@ router.put(
         hero.isActive = true;
       }
 
-      hero.heading = heading ?? hero.heading;
+      hero.heading    = heading    ?? hero.heading;
       hero.subheading = subheading ?? hero.subheading;
-      hero.ctaText = ctaText ?? hero.ctaText;
-      hero.ctaLink = ctaLink ?? hero.ctaLink;
+      hero.ctaText    = ctaText    ?? hero.ctaText;
+      hero.ctaLink    = ctaLink    ?? hero.ctaLink;
 
       await hero.save();
       res.json({ success: true, data: hero });
@@ -146,13 +133,11 @@ router.delete("/:id", protect, async (req, res) => {
   try {
     const hero = await Hero.findByIdAndDelete(req.params.id);
     if (!hero)
-      return res
-        .status(404)
-        .json({ success: false, message: "Hero not found" });
+      return res.status(404).json({ success: false, message: "Hero not found" });
 
-    // Clean up any files associated with this record
-    deleteFile(hero.backgroundImage);
-    deleteFile(hero.backgroundVideo);
+    // Clean up any files associated with this record from Cloudinary
+    if (hero.backgroundImage) await deleteFromCloudinary(hero.backgroundImage, "image");
+    if (hero.backgroundVideo) await deleteFromCloudinary(hero.backgroundVideo, "video");
 
     res.json({ success: true, message: "Hero deleted" });
   } catch (err) {
