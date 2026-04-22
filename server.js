@@ -43,6 +43,7 @@ app.use("/api/services", require("./routes/services"));
 app.use("/api/gallery", require("./routes/gallery"));
 app.use("/api/contact", require("./routes/contact"));
 app.use("/api/offering", require("./routes/offerings"));
+app.use("/api/equipment", require("./routes/equipment"));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get("/api/health", (req, res) =>
