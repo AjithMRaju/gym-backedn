@@ -44,6 +44,9 @@ app.use("/api/gallery", require("./routes/gallery"));
 app.use("/api/contact", require("./routes/contact"));
 app.use("/api/offering", require("./routes/offerings"));
 app.use("/api/equipment", require("./routes/equipment"));
+app.use("/api/clients", require("./routes/client"));
+app.use("/api/trainers", require("./routes/trainers"));
+app.use("/api/membership", require("./routes/membership"));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get("/api/health", (req, res) =>

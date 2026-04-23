@@ -16,12 +16,10 @@ router.post("/register", async (req, res) => {
       req.body;
 
     if (!name || !email || !phone || !password) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Name, email, phone and password are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Name, email, phone and password are required",
+      });
     }
 
     const exists = await Client.findOne({ email });
@@ -116,12 +114,10 @@ router.post("/", protect, async (req, res) => {
     } = req.body;
 
     if (!name || !email || !phone || !password) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: "Name, email, phone and password are required",
-        });
+      return res.status(400).json({
+        success: false,
+        message: "Name, email, phone and password are required",
+      });
     }
 
     const exists = await Client.findOne({ email });
@@ -231,12 +227,10 @@ router.patch("/:id/status", protect, async (req, res) => {
     const { status } = req.body;
     const allowed = ["active", "inactive", "suspended"];
     if (!allowed.includes(status)) {
-      return res
-        .status(400)
-        .json({
-          success: false,
-          message: `Status must be one of: ${allowed.join(", ")}`,
-        });
+      return res.status(400).json({
+        success: false,
+        message: `Status must be one of: ${allowed.join(", ")}`,
+      });
     }
 
     const client = await Client.findByIdAndUpdate(
