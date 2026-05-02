@@ -12,6 +12,7 @@ const app = express();
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
 const allowedOrigins = [
   "https://gym-admin-tawny.vercel.app",
+  "https://client-gym-seven.vercel.app/",
   "http://localhost:3000",
 ];
 app.use(
