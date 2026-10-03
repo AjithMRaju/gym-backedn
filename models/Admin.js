@@ -7,6 +7,12 @@ const adminSchema = new mongoose.Schema(
     email: { type: String, required: true, unique: true, lowercase: true },
     password: { type: String, required: true, minlength: 6 },
     role: { type: String, enum: ["superadmin", "editor"], default: "editor" },
+    // Two-factor authentication (TOTP)
+    twoFA: {
+      enabled: { type: Boolean, default: false },
+      secret: { type: String, default: null, select: false },   // Active TOTP secret (encrypted in prod via pre-save hook)
+      tempSecret: { type: String, default: null, select: false }, // Pending secret during setup
+    },
   },
   { timestamps: true },
 );

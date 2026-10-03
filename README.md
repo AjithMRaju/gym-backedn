@@ -11,11 +11,19 @@ gym-backend/
 ├── server.js                  # App entry point
 ├── .env.example               # Environment variable template
 ├── config/
-│   └── upload.js              # Multer file-upload config
+│   ├── upload.js              # Multer / Cloudinary upload config
+│   └── swagger.js             # OpenAPI 3.0 spec (GET /api/docs)
 ├── middleware/
-│   └── auth.js                # JWT auth middleware
+│   ├── auth.js                # JWT auth + session revocation check
+│   ├── roleGuard.js           # RBAC – requireRole() middleware
+│   └── rateLimiter.js         # In-memory sliding-window rate limiter
 ├── models/
-│   ├── Admin.js               # Dashboard admin accounts
+│   ├── Admin.js               # Dashboard admin accounts + 2FA fields
+│   ├── GymSettings.js         # Gym profile (one row per tenant)
+│   ├── BillingSettings.js     # Billing/invoice settings
+│   ├── NotificationSettings.js# Per-channel notification rules
+│   ├── AuditLog.js            # Immutable audit trail
+│   ├── AdminSession.js        # Active JWT session tracking
 │   ├── Hero.js                # Hero section content
 │   ├── About.js               # About section content
 │   ├── Service.js             # Services cards
@@ -23,13 +31,26 @@ gym-backend/
 │   └── Contact.js             # Contact info + visitor messages
 ├── routes/
 │   ├── auth.js                # Login / register / me
+│   ├── authSettings.js        # Change-password / 2FA / sessions
+│   ├── settings.js            # Gym / billing / notification settings
 │   ├── hero.js                # Hero CRUD
 │   ├── about.js               # About CRUD
 │   ├── services.js            # Services CRUD + reorder
 │   ├── gallery.js             # Gallery CRUD + bulk upload
 │   └── contact.js             # Contact info + messages
+├── services/
+│   ├── settingsService.js     # Settings business logic (partial update, concurrency)
+│   └── audit.js               # Audit log writer
+├── utils/
+│   ├── validators.js          # isValidTimezone / isValidCurrency / isValidEmail / isValidPhone
+│   └── crypto.js              # AES-256-GCM encrypt/decrypt + maskSecret + hashToken
 ├── scripts/
-│   └── seed.js                # One-time DB seed
+│   ├── seed.js                # One-time DB seed
+│   └── seedSettings.js        # Default gym/billing/notification settings seed
+├── tests/
+│   ├── validators.unit.test.js
+│   ├── crypto.unit.test.js
+│   └── settings.integration.test.js
 └── uploads/                   # Uploaded images (auto-served)
     ├── hero/
     ├── about/
@@ -100,12 +121,17 @@ http://localhost:5000/api
 
 ### 🔑 Auth Routes
 
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| POST | `/auth/register` | Public | Create admin account |
-| POST | `/auth/login` | Public | Login and get JWT token |
-| GET | `/auth/me` | 🔒 | Get current logged-in admin |
-| PUT | `/auth/change-password` | 🔒 | Change admin password |
+| Method | Endpoint | Auth | Rate-limited | Description |
+|--------|----------|------|-------------|-------------|
+| POST | `/auth/register` | Public | — | Create admin account |
+| POST | `/auth/login` | Public | — | Login and get JWT token |
+| GET | `/auth/me` | 🔒 | — | Get current logged-in admin |
+| POST | `/auth/change-password` | 🔒 | ✅ 5/15 min | Change password (invalidates other sessions) |
+| POST | `/auth/2fa/enable` | 🔒 | ✅ 10/15 min | Generate TOTP secret + QR URI |
+| POST | `/auth/2fa/verify` | 🔒 | ✅ 10/15 min | Verify TOTP token and activate 2FA |
+| GET | `/auth/sessions` | 🔒 | — | List all active sessions |
+| DELETE | `/auth/sessions` | 🔒 | — | Revoke all other sessions |
+| DELETE | `/auth/sessions/:id` | 🔒 | — | Revoke a specific session |
 
 **POST /auth/login**
 ```json
@@ -306,6 +332,454 @@ limit   – Items per page (default: 20)
 
 ---
 
+### ⚙️ Settings
+
+> All settings endpoints require a valid JWT token (`Authorization: Bearer <token>`).
+> **Mutating endpoints** (`PUT`, `POST /logo`) additionally require the `superadmin` role — editors receive `403 FORBIDDEN`.
+
+#### Endpoint Overview
+
+| Method | Endpoint | Role Required | Description |
+|--------|----------|--------------|-------------|
+| GET | `/settings` | Any auth | Combined payload (gym + billing + notifications) |
+| GET | `/settings/gym` | Any auth | Gym profile settings |
+| PUT | `/settings/gym` | superadmin | Update gym profile (partial update supported) |
+| POST | `/settings/logo` | superadmin | Upload gym logo (≤2 MB, PNG/JPG/SVG) |
+| GET | `/settings/billing` | Any auth | Billing & invoice settings |
+| PUT | `/settings/billing` | superadmin | Update billing settings |
+| GET | `/settings/notifications` | Any auth | Notification rules (keyed by rule name) |
+| PUT | `/settings/notifications` | superadmin | Bulk-update notification rules |
+
+---
+
+#### GET /settings — Combined payload (first-page load)
+
+```json
+Response:
+{
+  "success": true,
+  "data": {
+    "gym": { /* GymSettings object */ },
+    "billing": { /* BillingSettings object */ },
+    "notifications": {
+      "expiry_reminder": { "enabled": true, "channels": ["email", "sms"] },
+      "payment_receipt": { "enabled": true, "channels": ["email"] },
+      "class_booking":   { "enabled": true, "channels": ["email", "push"] },
+      "daily_summary":   { "enabled": false, "channels": ["email"] }
+    }
+  }
+}
+```
+
+---
+
+#### GET /settings/gym
+
+```json
+Response:
+{
+  "success": true,
+  "data": {
+    "gym_id": "default",
+    "name": "Iron Paradise Gym",
+    "logo_url": "https://res.cloudinary.com/.../logo.png",
+    "email": "admin@ironparadise.com",
+    "phone": "+91-9876543210",
+    "gst_number": "27AAPFU0939F1ZV",
+    "address": "42 MG Road, Mumbai",
+    "timezone": "Asia/Kolkata",
+    "currency": "INR",
+    "language": "en",
+    "hours_weekday": { "open": "06:00", "close": "22:00" },
+    "hours_weekend": { "open": "07:00", "close": "20:00" },
+    "updated_at": "2026-10-03T06:00:00.000Z",
+    "updated_by": "66f1a2b3c4d5e6f7a8b9c0d1",
+    "__v": 3
+  }
+}
+```
+
+> **`__v`** is the optimistic concurrency version. Always echo it back in PUT requests.
+
+---
+
+#### PUT /settings/gym — Update gym profile
+
+```json
+Request body (all fields optional — partial update):
+{
+  "name": "Iron Paradise Gym",
+  "email": "admin@ironparadise.com",
+  "phone": "+91-9876543210",
+  "gst_number": "27AAPFU0939F1ZV",
+  "address": "42 MG Road, Mumbai",
+  "timezone": "Asia/Kolkata",
+  "currency": "INR",
+  "language": "en",
+  "hours_weekday": { "open": "06:00", "close": "22:00" },
+  "hours_weekend": { "open": "07:00", "close": "20:00" },
+  "__v": 3
+}
+```
+
+**Validation rules:**
+```
+name        – max 100 chars
+email       – valid email format
+phone       – 7–20 chars, allows + - ( ) spaces
+timezone    – valid IANA timezone (e.g. Asia/Kolkata, UTC, America/New_York)
+currency    – valid ISO 4217 code (e.g. INR, USD, EUR)
+language    – 2–10 char language tag
+hours_*.open / .close  – HH:MM format
+__v         – send current version to detect conflicts (optional but recommended)
+```
+
+```json
+Success response (200):
+{
+  "success": true,
+  "data": { /* updated GymSettings object */ }
+}
+
+Conflict response (409) – when __v is stale:
+{
+  "code": "CONFLICT",
+  "message": "Settings were modified by another request. Please reload and try again.",
+  "fieldErrors": {}
+}
+
+Validation error response (400):
+{
+  "code": "VALIDATION_ERROR",
+  "message": "Validation failed",
+  "fieldErrors": {
+    "email": ["Invalid email address"],
+    "timezone": ["NotAZone is not a valid IANA timezone"]
+  }
+}
+
+Forbidden (403) – editor role:
+{
+  "code": "FORBIDDEN",
+  "message": "This action requires one of the following roles: superadmin",
+  "fieldErrors": {}
+}
+```
+
+---
+
+#### POST /settings/logo — Upload gym logo
+
+```
+Content-Type: multipart/form-data
+Field name:   logo
+Max size:     2 MB
+Allowed MIME: image/png, image/jpeg, image/svg+xml
+Allowed ext:  .png, .jpg, .jpeg, .svg
+```
+
+```json
+Success response (200):
+{
+  "success": true,
+  "data": {
+    "logo_url": "https://res.cloudinary.com/your-cloud/image/upload/v.../logo-1727...",
+    "gym": { /* full updated GymSettings object */ }
+  }
+}
+
+Error (400) – wrong type or too large:
+{
+  "code": "UPLOAD_ERROR",
+  "message": "Logo must be a PNG, JPG, or SVG file under 2 MB",
+  "fieldErrors": {}
+}
+```
+
+---
+
+#### GET /settings/billing
+
+```json
+Response:
+{
+  "success": true,
+  "data": {
+    "gym_id": "default",
+    "tax_rate": 18,
+    "grace_period_days": 5,
+    "late_fee": 100,
+    "freeze_limit_days": 30,
+    "auto_renew": false,
+    "allow_guest_passes": true,
+    "invoice_prefix": "GYM-INV",
+    "invoice_footer": "Thank you for choosing Iron Paradise Gym!",
+    "updated_at": "2026-10-03T06:00:00.000Z",
+    "__v": 1
+  }
+}
+```
+
+---
+
+#### PUT /settings/billing — Update billing settings
+
+```json
+Request body (all fields optional):
+{
+  "tax_rate": 18,
+  "grace_period_days": 5,
+  "late_fee": 100,
+  "freeze_limit_days": 30,
+  "auto_renew": false,
+  "allow_guest_passes": true,
+  "invoice_prefix": "GYM-INV",
+  "invoice_footer": "Thank you for your business!",
+  "__v": 1
+}
+```
+
+**Validation rules:**
+```
+tax_rate          – number, 0–100
+grace_period_days – integer, 0–365
+late_fee          – number, >= 0
+freeze_limit_days – integer, 0–365
+auto_renew        – boolean
+allow_guest_passes– boolean
+invoice_prefix    – string, max 20 chars
+invoice_footer    – string, max 1000 chars
+```
+
+```json
+Success response (200):
+{
+  "success": true,
+  "data": { /* updated BillingSettings object */ }
+}
+```
+
+---
+
+#### GET /settings/notifications
+
+```json
+Response:
+{
+  "success": true,
+  "data": {
+    "expiry_reminder": {
+      "enabled": true,
+      "channels": ["email", "sms"]
+    },
+    "payment_receipt": {
+      "enabled": true,
+      "channels": ["email"]
+    },
+    "class_booking": {
+      "enabled": true,
+      "channels": ["email", "push"]
+    },
+    "daily_summary": {
+      "enabled": false,
+      "channels": ["email"]
+    }
+  }
+}
+```
+
+---
+
+#### PUT /settings/notifications — Bulk-update notification rules
+
+Send only the keys you want to update. Omitted keys are left unchanged.
+
+```json
+Request body:
+{
+  "expiry_reminder": { "enabled": true, "channels": ["email", "sms", "whatsapp"] },
+  "daily_summary":   { "enabled": false }
+}
+```
+
+**Valid keys:** `expiry_reminder` · `payment_receipt` · `class_booking` · `daily_summary`  
+**Valid channels:** `email` · `sms` · `whatsapp` · `push`
+
+```json
+Success response (200):
+{
+  "success": true,
+  "data": { /* full updated notifications keyed object */ }
+}
+
+Validation error (400) – unknown key:
+{
+  "code": "VALIDATION_ERROR",
+  "message": "Validation failed",
+  "fieldErrors": {
+    "_": ["Unknown notification key: telegram_alerts. Must be one of: expiry_reminder, ..."]
+  }
+}
+```
+
+---
+
+### 🔐 Auth – Security Endpoints
+
+#### POST /auth/change-password
+
+Rate-limited to **5 requests per 15 minutes** per IP. On success, all other active sessions are revoked and a fresh JWT is returned.
+
+```json
+Request:
+{
+  "currentPassword": "OldPass123!",
+  "newPassword": "NewSecure456!"
+}
+
+Success response (200):
+{
+  "success": true,
+  "message": "Password updated. Other sessions have been revoked.",
+  "token": "eyJhbGciOi..."  // new JWT for current session
+}
+
+Error (401) – wrong current password:
+{
+  "code": "INVALID_CREDENTIALS",
+  "message": "Current password is incorrect",
+  "fieldErrors": { "currentPassword": ["Current password is incorrect"] }
+}
+
+Error (429) – rate limit exceeded:
+{
+  "code": "RATE_LIMIT_EXCEEDED",
+  "message": "Too many password-change attempts. Please try again in 15 minutes.",
+  "fieldErrors": {}
+}
+```
+
+---
+
+#### POST /auth/2fa/enable
+
+Rate-limited to **10 requests per 15 minutes** per IP.
+
+```json
+Response (200):
+{
+  "success": true,
+  "data": {
+    "secret": "JBSWY3DPEHPK3PXP",
+    "otpauth_uri": "otpauth://totp/GymAdmin:admin%40gym.com?secret=JBSWY3DPEHPK3PXP&issuer=GymAdmin&algorithm=SHA1&digits=6&period=30"
+  }
+}
+```
+
+> Encode `otpauth_uri` as a QR code in the frontend (e.g. with `qrcode.js`). The user scans it with Google Authenticator / Authy.
+
+---
+
+#### POST /auth/2fa/verify
+
+```json
+Request:
+{ "token": "123456" }
+
+Success (200):
+{ "success": true, "message": "Two-factor authentication has been enabled." }
+
+Error (401) – wrong or expired TOTP:
+{
+  "code": "INVALID_TOKEN",
+  "message": "TOTP token is incorrect or expired",
+  "fieldErrors": { "token": ["Invalid or expired TOTP token"] }
+}
+```
+
+---
+
+#### GET /auth/sessions — List active sessions
+
+```json
+Response (200):
+{
+  "success": true,
+  "data": [
+    {
+      "_id": "66f1a2b3c4d5e6f7a8b9c0d1",
+      "device": "Chrome",
+      "ip": "103.27.8.141",
+      "last_active": "2026-10-03T06:00:00.000Z",
+      "expires_at": "2026-10-10T06:00:00.000Z",
+      "created_at": "2026-10-03T05:00:00.000Z",
+      "is_current": true
+    },
+    {
+      "_id": "66f1a2b3c4d5e6f7a8b9c0d2",
+      "device": "Mobile Browser",
+      "ip": "103.27.8.99",
+      "last_active": "2026-10-02T18:00:00.000Z",
+      "expires_at": "2026-10-09T18:00:00.000Z",
+      "created_at": "2026-10-02T18:00:00.000Z",
+      "is_current": false
+    }
+  ]
+}
+```
+
+---
+
+#### DELETE /auth/sessions/:id — Revoke a specific session
+
+```json
+Success (200):
+{ "success": true, "message": "Session revoked." }
+
+Not found (404):
+{ "code": "NOT_FOUND", "message": "Session not found", "fieldErrors": {} }
+```
+
+#### DELETE /auth/sessions — Revoke all other sessions (keep current)
+
+```json
+Success (200):
+{ "success": true, "message": "2 other session(s) have been revoked." }
+```
+
+---
+
+### 🚨 Consistent Error Format
+
+All `4xx` and `5xx` responses follow this structure:
+
+```json
+{
+  "code": "VALIDATION_ERROR",
+  "message": "Human-readable description",
+  "fieldErrors": {
+    "fieldName": ["error message 1", "error message 2"]
+  }
+}
+```
+
+| Code | HTTP | Meaning |
+|---|---|---|
+| `VALIDATION_ERROR` | 400 | One or more fields failed validation |
+| `UPLOAD_ERROR` | 400 | File upload rejected (wrong type / too large) |
+| `UNAUTHORIZED` | 401 | Missing or invalid JWT |
+| `TOKEN_INVALID` | 401 | Token expired or malformed |
+| `SESSION_REVOKED` | 401 | Session was explicitly revoked |
+| `INVALID_CREDENTIALS` | 401 | Wrong password |
+| `INVALID_TOKEN` | 401 | Wrong TOTP code |
+| `FORBIDDEN` | 403 | Authenticated but insufficient role |
+| `NOT_FOUND` | 404 | Resource not found |
+| `CONFLICT` | 409 | Optimistic concurrency version mismatch |
+| `RATE_LIMIT_EXCEEDED` | 429 | Too many requests |
+| `INTERNAL_ERROR` | 500 | Unexpected server error |
+
+---
+
 ## 🌐 Using the API in Your Frontend (Website)
 
 ```javascript
@@ -401,7 +875,12 @@ const msgs = await fetch(`${API}/contact/messages?unread=true`, {
 
 | Collection | Purpose |
 |------------|---------|
-| `admins` | Dashboard admin accounts (hashed passwords) |
+| `admins` | Dashboard admin accounts (hashed passwords + 2FA secrets) |
+| `gymsettings` | Gym profile – name, logo, email, phone, timezone, currency |
+| `billingsettings` | Tax rate, grace period, late fee, invoice config |
+| `notificationsettings` | Per-channel notification rules (email/sms/whatsapp/push) |
+| `auditlogs` | Immutable change history – who, what, old value, new value |
+| `adminsessions` | Active JWT sessions (SHA-256 hashed); TTL auto-cleanup |
 | `heroes` | Hero section content + background image |
 | `abouts` | About section with stats array |
 | `services` | Service cards with images and pricing |
@@ -421,6 +900,13 @@ const msgs = await fetch(`${API}/contact/messages?unread=true`, {
 | `JWT_EXPIRES_IN` | Token expiry duration | `7d` |
 | `ALLOWED_ORIGINS` | Comma-separated CORS origins | `*` |
 | `MAX_FILE_SIZE_MB` | Max image upload size | `5` |
+| `MAX_VIDEO_SIZE_MB` | Max video upload size | `100` |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name | — |
+| `CLOUDINARY_API_KEY` | Cloudinary API key | — |
+| `CLOUDINARY_API_SECRET` | Cloudinary API secret | — |
+| `SETTINGS_ENCRYPTION_KEY` | 64-char hex key for AES-256-GCM secrets at rest. Generate: `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"` | — |
+| `APP_NAME` | Application name shown in 2FA QR codes | `GymAdmin` |
+| `MONGO_URI_TEST` | Separate DB for integration tests | — |
 
 ---
 
@@ -429,10 +915,49 @@ const msgs = await fetch(`${API}/contact/messages?unread=true`, {
 - [ ] Change `JWT_SECRET` to a strong random string
 - [ ] Set `ALLOWED_ORIGINS` to your actual frontend domain(s)
 - [ ] Change default admin password after first login
+- [ ] Generate a fresh `SETTINGS_ENCRYPTION_KEY` (64-char hex) per environment
 - [ ] Use MongoDB Atlas with IP whitelist for cloud deployments
 - [ ] Enable HTTPS with SSL certificate
-- [ ] Consider rate limiting (e.g. `express-rate-limit`)
-- [ ] Move uploaded files to cloud storage (AWS S3 / Cloudinary) for scalability
+- [ ] Rate limiting is built-in for password & 2FA endpoints (5–10 req / 15 min)
+- [ ] Enable 2FA (`/auth/2fa/enable` → `/auth/2fa/verify`) for all admin accounts
+- [ ] Review audit logs (`auditlogs` collection) regularly
+- [ ] Uploaded files are stored on Cloudinary – no local disk dependency
+
+---
+
+## 🧪 Running Tests
+
+```bash
+# Unit tests only (no database needed) – validators & crypto helpers
+npm run test:unit
+
+# Integration tests (requires running MongoDB)
+npm run test:integration
+
+# All tests
+npm test
+```
+
+**Test coverage:**
+| Suite | Tests | What's covered |
+|---|---|---|
+| `validators.unit.test.js` | 27 | timezone, currency, email, phone validation + error payload builder |
+| `crypto.unit.test.js` | 15 | AES-256-GCM round-trip, IV randomness, tamper detection, maskSecret, hashToken |
+| `settings.integration.test.js` | 24 | All 8 settings endpoints – auth, RBAC, validation, concurrency, partial update |
+
+---
+
+## 📋 Seeding Default Settings
+
+```bash
+# Seed initial gym/billing/notification defaults (safe to run multiple times)
+npm run seed:settings
+```
+
+Creates:
+- Gym: `My Gym` · timezone `Asia/Kolkata` · currency `INR`
+- Billing: 18% tax, 5-day grace period, 30-day freeze limit
+- Notifications: expiry_reminder & payment_receipt enabled via email
 
 ---
 
@@ -443,8 +968,12 @@ const msgs = await fetch(`${API}/contact/messages?unread=true`, {
 | Runtime | Node.js |
 | Framework | Express.js |
 | Database | MongoDB (via Mongoose ODM) |
-| Auth | JWT + bcryptjs |
-| File Uploads | Multer (disk storage) |
-| Validation | express-validator |
-| Security | Helmet, CORS |
-| Logging | Morgan |
+| Auth | JWT + bcryptjs (12 rounds) |
+| 2FA | RFC 6238 TOTP (built-in, zero deps) |
+| File Uploads | Multer + Cloudinary |
+| Validation | express-validator + custom validators |
+| Encryption | AES-256-GCM (Node.js crypto, built-in) |
+| Security | Helmet, CORS, rate limiter, RBAC |
+| Logging | Morgan + audit log (MongoDB) |
+| API Docs | OpenAPI 3.0 (`GET /api/docs`) |
+| Testing | Jest + Supertest |

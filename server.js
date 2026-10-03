@@ -38,6 +38,8 @@ app.use((req, res, next) => {
 
 // ─── Routes ───────────────────────────────────────────────────────────────────
 app.use("/api/auth", require("./routes/auth"));
+app.use("/api/auth", require("./routes/authSettings")); // session + 2FA + change-password
+app.use("/api/settings", require("./routes/settings")); // gym/billing/notification settings
 app.use("/api/hero", require("./routes/hero"));
 app.use("/api/about", require("./routes/about"));
 app.use("/api/services", require("./routes/services"));
@@ -50,6 +52,9 @@ app.use("/api/trainers", require("./routes/trainers"));
 app.use("/api/membership", require("./routes/membership"));
 app.use("/api/analytics", require("./routes/analytics"));
 app.use("/api/payments", require("./routes/payment"));
+
+// ─── OpenAPI Spec (JSON) ──────────────────────────────────────────────────────
+app.get("/api/docs", (req, res) => res.json(require("./config/swagger")));
 
 // ─── Health Check ─────────────────────────────────────────────────────────────
 app.get("/api/health", (req, res) =>
