@@ -977,3 +977,175 @@ Creates:
 | Logging | Morgan + audit log (MongoDB) |
 | API Docs | OpenAPI 3.0 (`GET /api/docs`) |
 | Testing | Jest + Supertest |
+
+---
+
+## 🤖 Voice AI Assistant ("Buddy")
+
+The backend includes a real-time voice and text AI companion for gym owners and staff, powered by Anthropic Claude with tool use, OpenAI Whisper (Speech-to-Text), and OpenAI TTS (Text-to-Speech).
+
+### 1. Setup & Environment Variables
+
+Add the following keys to your `.env` file:
+
+```env
+# Anthropic Claude API Key (reasoning & tool execution)
+ANTHROPIC_API_KEY=sk-ant-api03-your_key_here
+ANTHROPIC_MODEL=claude-sonnet-5-5
+
+# Speech-to-Text & Text-to-Speech (OpenAI)
+OPENAI_API_KEY=sk-proj-your_key_here
+STT_MODEL=whisper-1
+TTS_MODEL=tts-1
+
+# Optional Quotas & Rate Limits
+AI_MONTHLY_QUOTA=500
+
+# Stripe for AI Plan Checkout
+STRIPE_SECRET_KEY=sk_test_your_stripe_key
+STRIPE_WEBHOOK_SECRET=whsec_your_webhook_secret
+```
+
+### 2. Available Server-Side AI Tools
+
+All tools are read-only, validated, and scoped to the authenticated admin's tenant:
+
+1. `get_revenue({ period, startDate?, endDate?, groupBy? })`: Computes net revenue (completed payments minus refunds). Restricted to `superadmin` (Owner) role.
+2. `get_member_counts({ status? })`: Returns active, inactive, suspended, expired, and frozen member counts.
+3. `get_new_members({ period })`: Returns new members registered in the period (capped at 10 names).
+4. `get_attendance({ period })`: Returns check-ins count, busiest day, and busiest hour.
+5. `get_expiring_memberships({ withinDays })`: Returns memberships expiring within 1 to 30 days.
+6. `get_unpaid_dues()`: Returns total unpaid/pending payment amounts and counts.
+
+### 3. How to Add a New Tool
+
+1. Create a tool file under `services/ai/tools/<toolName>Tool.js`:
+   ```javascript
+   const schema = {
+     name: "get_trainer_stats",
+     description: "Get trainer session counts and ratings",
+     input_schema: {
+       type: "object",
+       properties: {
+         trainerId: { type: "string", description: "Optional trainer ID" },
+       },
+     },
+   };
+
+   async function execute(args, context) {
+     const { user, gymId } = context;
+     // Fetch data using existing models
+     return { trainerId: args.trainerId, sessionsConducted: 42 };
+   }
+
+   module.exports = { schema, execute };
+   ```
+2. Register the tool in `services/ai/tools/index.js`:
+   ```javascript
+   const { schema: trainerSchema, execute: executeTrainer } = require("./trainerTool");
+   toolsMap.get_trainer_stats = { schema: trainerSchema, execute: executeTrainer };
+   ```
+3. The tool is automatically exposed to Claude's system prompt and tool loop.
+
+---
+
+### 4. API Endpoints Contract & Testing with cURL
+
+All endpoints are mounted under both `/api/v1/ai` and `/api/ai`. Bearer token required.
+
+#### 4.1 Subscription / Trial
+- `GET /api/v1/ai/subscription`
+  - Response:
+    ```json
+    {
+      "status": "active",
+      "plan": "pro",
+      "trialEndsAt": null,
+      "currentPeriodEnd": "2026-11-23T00:00:00.000Z",
+      "hasAccess": true
+    }
+    ```
+- `POST /api/v1/ai/subscription/trial`
+  - Response: 200 (activated 7-day trial) or 409 `TRIAL_ALREADY_USED`.
+
+#### 4.2 Robot Preferences
+- `GET /api/v1/ai/robot-preferences`
+  - Response:
+    ```json
+    {
+      "name": "Buddy",
+      "color": "#f0763c",
+      "accentColor": "#f7d38b",
+      "voiceEnabled": true,
+      "voice": "default",
+      "defaultMode": "happy"
+    }
+    ```
+- `PUT /api/v1/ai/robot-preferences`
+  - Request: `{ "name": "Atlas", "color": "#1e293b", "defaultMode": "thinking" }`
+  - Response: Updated preference object.
+
+#### 4.3 Ask by Voice
+```bash
+curl -X POST http://localhost:8000/api/v1/ai/assistant/voice \
+  -H "Authorization: Bearer <TOKEN>" \
+  -F "audio=@recording.webm;type=audio/webm" \
+  -F "replyWithAudio=true"
+```
+Response (200 OK):
+```json
+{
+  "conversationId": "653b8f1a2e9d8c0012a4b3c1",
+  "messageId": "653b8f1a2e9d8c0012a4b3c2",
+  "transcript": "How much is the total revenue this week?",
+  "replyText": "Your total revenue this week is 48,250 INR, from 112 payments.",
+  "replyAudioUrl": "/api/v1/ai/assistant/audio/653b8f1a2e9d8c0012a4b3c3",
+  "audioExpiresAt": "2026-10-23T11:00:00.000Z",
+  "robotMode": "happy",
+  "sources": [{ "tool": "get_revenue", "period": "this_week" }],
+  "latencyMs": 420
+}
+```
+
+#### 4.4 Ask by Text
+```bash
+curl -X POST http://localhost:8000/api/v1/ai/assistant/ask \
+  -H "Authorization: Bearer <TOKEN>" \
+  -H "Content-Type: application/json" \
+  -d '{"message": "How many active members do we have?", "replyWithAudio": true}'
+```
+Response: Same schema as 4.3.
+
+#### 4.5 Fetch Streamed Audio
+```bash
+curl -X GET http://localhost:8000/api/v1/ai/assistant/audio/<AUDIO_ID> \
+  -H "Authorization: Bearer <TOKEN>" \
+  --output reply.mp3
+```
+
+#### 4.6 History & Analytics Dashboard
+- `GET /api/v1/ai/assistant/conversations/:id`
+- `GET /api/v1/ai/assistant/dashboard?range=7d`
+  - Response:
+    ```json
+    {
+      "range": "7d",
+      "totals": { "questions": 45, "voiceQuestions": 28 },
+      "topTools": [{ "tool": "get_revenue", "count": 22 }],
+      "daily": [{ "date": "2026-10-23", "questions": 12 }],
+      "recent": [{ "id": "...", "question": "revenue this week", "createdAt": "..." }]
+    }
+    ```
+
+---
+
+### 5. Running Tests
+
+```bash
+# Run AI Voice Assistant test suite
+npx jest tests/ai.assistant.test.js --runInBand --forceExit
+
+# Run all test suites
+npm test
+```
+

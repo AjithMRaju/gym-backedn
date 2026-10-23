@@ -376,6 +376,155 @@ const swaggerSpec = {
         },
       },
     },
+    "/api/v1/ai/subscription": {
+      get: {
+        summary: "Get AI subscription status",
+        tags: ["AI Assistant"],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: {
+            description: "Current subscription and trial status",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    status: { type: "string", enum: ["none", "trialing", "active", "past_due", "canceled"] },
+                    plan: { type: "string", nullable: true },
+                    trialEndsAt: { type: "string", format: "date-time", nullable: true },
+                    currentPeriodEnd: { type: "string", format: "date-time", nullable: true },
+                    hasAccess: { type: "boolean" },
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+    "/api/v1/ai/subscription/trial": {
+      post: {
+        summary: "Start 7-day free trial for AI Assistant",
+        tags: ["AI Assistant"],
+        security: [{ bearerAuth: [] }],
+        responses: {
+          200: { description: "Trial started successfully" },
+          409: { description: "Trial has already been activated" },
+        },
+      },
+    },
+    "/api/v1/ai/robot-preferences": {
+      get: {
+        summary: "Get user's robot assistant preferences",
+        tags: ["AI Assistant"],
+        security: [{ bearerAuth: [] }],
+        responses: { 200: { description: "Robot preferences" } },
+      },
+      put: {
+        summary: "Update robot assistant preferences",
+        tags: ["AI Assistant"],
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  name: { type: "string", maxLength: 30 },
+                  color: { type: "string", example: "#f0763c" },
+                  accentColor: { type: "string", example: "#f7d38b" },
+                  voiceEnabled: { type: "boolean" },
+                  voice: { type: "string", enum: ["default", "alloy", "echo", "fable", "onyx", "nova", "shimmer"] },
+                  defaultMode: { type: "string", enum: ["happy", "thinking", "sad", "nervous", "sleeping"] },
+                },
+              },
+            },
+          },
+        },
+        responses: { 200: { description: "Preferences updated" }, 400: { description: "Validation error" } },
+      },
+    },
+    "/api/v1/ai/assistant/voice": {
+      post: {
+        summary: "Ask AI Assistant via spoken audio",
+        tags: ["AI Assistant"],
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                properties: {
+                  audio: { type: "string", format: "binary" },
+                  conversationId: { type: "string" },
+                  replyWithAudio: { type: "boolean", default: true },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "Assistant response with transcript, reply, and optional audio" },
+          400: { description: "Invalid audio format" },
+          402: { description: "AI plan required" },
+          413: { description: "File too large (>25MB)" },
+          422: { description: "No speech detected" },
+          429: { description: "Rate limited" },
+          502: { description: "Upstream STT or Claude failure" },
+        },
+      },
+    },
+    "/api/v1/ai/assistant/ask": {
+      post: {
+        summary: "Ask AI Assistant via text message",
+        tags: ["AI Assistant"],
+        security: [{ bearerAuth: [] }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["message"],
+                properties: {
+                  message: { type: "string", maxLength: 500 },
+                  conversationId: { type: "string" },
+                  replyWithAudio: { type: "boolean", default: true },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "Assistant response" },
+          400: { description: "Validation error" },
+          402: { description: "AI plan required" },
+          429: { description: "Rate limited" },
+        },
+      },
+    },
+    "/api/v1/ai/assistant/audio/{id}": {
+      get: {
+        summary: "Stream generated assistant audio response",
+        tags: ["AI Assistant"],
+        security: [{ bearerAuth: [] }],
+        parameters: [{ in: "path", name: "id", required: true, schema: { type: "string" } }],
+        responses: {
+          200: { description: "Audio stream (audio/mpeg)" },
+          404: { description: "Not found or expired" },
+        },
+      },
+    },
+    "/api/v1/ai/assistant/dashboard": {
+      get: {
+        summary: "Get AI usage statistics and query breakdown",
+        tags: ["AI Assistant"],
+        security: [{ bearerAuth: [] }],
+        parameters: [{ in: "query", name: "range", schema: { type: "string", enum: ["7d", "30d", "90d"] } }],
+        responses: { 200: { description: "AI usage dashboard metrics" } },
+      },
+    },
   },
 };
 

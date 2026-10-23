@@ -52,6 +52,8 @@ app.use("/api/trainers", require("./routes/trainers"));
 app.use("/api/membership", require("./routes/membership"));
 app.use("/api/analytics", require("./routes/analytics"));
 app.use("/api/payments", require("./routes/payment"));
+app.use("/api/v1/ai", require("./routes/ai"));
+app.use("/api/ai", require("./routes/ai"));
 
 // ─── OpenAPI Spec (JSON) ──────────────────────────────────────────────────────
 app.get("/api/docs", (req, res) => res.json(require("./config/swagger")));
@@ -77,17 +79,18 @@ app.use((err, req, res, next) => {
 
 // ─── Database + Server Start ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
-const temp = process.env.MONGO_URI;
 
-mongoose
-  .connect(process.env.MONGO_URI)
-  .then(() => {
-    console.log("✅ MongoDB connected");
-    app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
-  })
-  .catch((err) => {
-    console.error("❌ MongoDB connection failed:", err.message);
-    process.exit(1);
-  });
+if (process.env.NODE_ENV !== "test") {
+  mongoose
+    .connect(process.env.MONGO_URI)
+    .then(() => {
+      console.log("✅ MongoDB connected");
+      app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+    })
+    .catch((err) => {
+      console.error("❌ MongoDB connection failed:", err.message);
+      process.exit(1);
+    });
+}
 
 module.exports = app;

@@ -33,15 +33,16 @@ const NotificationSettings = require("../models/NotificationSettings");
 
 let superadminToken;
 let editorToken;
+let mongod;
 
 // ─── Test Setup / Teardown ─────────────────────────────────────────────────────
 
 beforeAll(async () => {
-  // Wait for mongoose to connect (server.js connects on boot)
-  await new Promise((resolve) => {
-    if (mongoose.connection.readyState === 1) return resolve();
-    mongoose.connection.once("connected", resolve);
-  });
+  if (mongoose.connection.readyState !== 1) {
+    const { MongoMemoryServer } = require("mongodb-memory-server");
+    mongod = await MongoMemoryServer.create();
+    await mongoose.connect(mongod.getUri());
+  }
 
   // Clean up test data
   await Promise.all([
@@ -298,4 +299,9 @@ describe("Error response format", () => {
     expect(res.body).toHaveProperty("message");
     expect(res.body).toHaveProperty("fieldErrors");
   });
+});
+
+afterAll(async () => {
+  await mongoose.disconnect();
+  if (mongod) await mongod.stop();
 });
