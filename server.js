@@ -4,9 +4,12 @@ const cors = require("cors");
 const helmet = require("helmet");
 const morgan = require("morgan");
 const path = require("path");
+const http = require("http");
+const { initChatSocket } = require("./services/chatSocket");
 require("dotenv").config();
 
 const app = express();
+const server = http.createServer(app);
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(helmet({ crossOriginResourcePolicy: { policy: "cross-origin" } }));
@@ -52,6 +55,7 @@ app.use("/api/trainers", require("./routes/trainers"));
 app.use("/api/membership", require("./routes/membership"));
 app.use("/api/analytics", require("./routes/analytics"));
 app.use("/api/payments", require("./routes/payment"));
+app.use("/api/chat", require("./routes/chat"));
 
 // ─── OpenAPI Spec (JSON) ──────────────────────────────────────────────────────
 app.get("/api/docs", (req, res) => res.json(require("./config/swagger")));
@@ -75,19 +79,24 @@ app.use((err, req, res, next) => {
   });
 });
 
+// ─── Initialize Real-Time Chat WebSocket ──────────────────────────────────────
+initChatSocket(server, allowedOrigins);
+
 // ─── Database + Server Start ──────────────────────────────────────────────────
 const PORT = process.env.PORT || 5000;
-const temp = process.env.MONGO_URI;
 
 mongoose
   .connect(process.env.MONGO_URI)
   .then(() => {
     console.log("✅ MongoDB connected");
-    app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
+    server.listen(PORT, () =>
+      console.log(`🚀 Server and WebSocket running on port ${PORT}`)
+    );
   })
   .catch((err) => {
     console.error("❌ MongoDB connection failed:", err.message);
     process.exit(1);
   });
 
+app.server = server;
 module.exports = app;

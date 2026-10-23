@@ -810,6 +810,114 @@ await fetch(`${API}/contact/message`, {
 
 ---
 
+## 💬 Real-Time Chat & Toast Notifications (Admin ⇄ Active Trainers)
+
+A complete **WhatsApp-standard real-time chat** powered by **Socket.io + MongoDB** connecting Admins and Active Trainers with instant **Toast Notifications**, media attachments, voice notes, message editing, deletion, quoted replies, status ticks, and cursor-based pagination.
+
+### 🌟 Key Features
+
+1. **Active Trainers Enforcement**:
+   - Chatting is strictly restricted to **active trainers** (`status: "active"`).
+   - If a trainer is `inactive` or `on_leave`, admins cannot initiate or send new messages to them, and trainers cannot send messages.
+   - Dedicated active trainers directory (`GET /api/chat/trainers/active`) lists all eligible trainers with last message previews and unread badges.
+
+2. **WhatsApp Standard Messaging Experience**:
+   - **Edit Message**: Senders can edit sent messages with audit trail (`editHistory`, `isEdited: true`, `editedAt`).
+   - **Delete Message**: Supports **"Delete for everyone"** (WhatsApp tombstone: *"This message was deleted"*) and **"Delete for me"** (`deletedForUsers`).
+   - **Quoted Reply**: WhatsApp-style reply preview with `replyTo` (`messageId`, `text`, `senderName`, `messageType`, `attachmentUrl`).
+   - **File Attachments**: Images (`jpg`, `png`, `webp`, `gif`), Videos (`mp4`, `webm`, `mov`), and Documents (`pdf`, `doc`, `docx`, `xls`).
+   - **Voice Messages**: Real-time voice notes (`audio/webm`, `audio/mp3`, `audio/ogg`, `audio/wav`, `audio/m4a`) with audio duration in seconds.
+   - **WhatsApp Status Ticks**:
+     - `sent` (✓ Single grey tick) – Message saved on server
+     - `delivered` (✓✓ Double grey tick) – Recipient is online / message pushed
+     - `read` (✓✓ Double blue tick) – Recipient opened the conversation
+   - **Indicators**: Real-time typing (`user_typing`) and voice recording indicators (`user_recording`).
+   - **Online Presence**: Real-time online/offline status broadcast (`user_status`).
+
+3. **In-App Toast Notification System**:
+   - **Real-time Toast Event**: When a new chat message arrives, server emits `chat:notification` to the recipient's personal room (`user:<userId>`). The frontend listens and immediately renders a toast popover.
+   - **REST Toast API**:
+     - `GET /api/chat/notifications` – Fetch unread/recent chat notification toasts on page load or polling.
+     - `PATCH /api/chat/notifications/:id/read` – Mark single notification read.
+     - `PATCH /api/chat/notifications/mark-all-read` – Mark all notifications read.
+     - `GET /api/chat/unread-summary` – Get total unread count and count per conversation.
+
+4. **Chat Pagination (Infinite Scroll)**:
+   - Uses WhatsApp-style cursor pagination (`?before=<messageId>&limit=30`).
+   - Scrolling up fetches older messages without offset shifts or duplicate issues.
+
+---
+
+### 🔌 WebSocket (Socket.io) Specification
+
+Connect to server with JWT authentication:
+```javascript
+import { io } from "socket.io-client";
+
+const socket = io("http://localhost:5000", {
+  auth: { token: "<JWT_TOKEN>" },
+  transports: ["websocket", "polling"],
+});
+```
+
+#### Client ➔ Server Events
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `join_conversation` | `{ conversationId: "..." }` | Join conversation room |
+| `leave_conversation` | `{ conversationId: "..." }` | Leave conversation room |
+| `send_message` | `{ conversationId, text, messageType, attachments, replyToMessageId }` | Send text, media, or voice message |
+| `edit_message` | `{ messageId, newText }` | Edit sent message |
+| `delete_message` | `{ messageId, deleteType: "everyone" \| "for_me" }` | Delete message (everyone or for me) |
+| `mark_read` | `{ conversationId: "..." }` | Mark messages in conversation as read (double blue ticks) |
+| `typing_start` | `{ conversationId: "..." }` | Started typing |
+| `typing_stop` | `{ conversationId: "..." }` | Stopped typing |
+| `record_voice_start` | `{ conversationId: "..." }` | Started recording voice note |
+| `record_voice_stop` | `{ conversationId: "..." }` | Stopped recording voice note |
+
+#### Server ➔ Client Broadcast Events
+
+| Event | Payload | Description |
+|-------|---------|-------------|
+| `new_message` | `ChatMessage` object | Emitted to room `conversation:<id>` |
+| `chat:notification` | `{ notificationId, type, title, message, preview, sender, conversationId, messageId, createdAt }` | **Direct toast notification payload** emitted to recipient room `user:<recipientId>` |
+| `message_edited` | `{ messageId, conversationId, newText, isEdited, editedAt }` | Emitted when message is edited |
+| `message_deleted` | `{ messageId, conversationId, deletedForEveryone, text: "This message was deleted" }` | Emitted when message is deleted for everyone |
+| `messages_read` | `{ conversationId, readerId, readAt, count }` | Emitted when messages are read (triggers blue ticks) |
+| `user_typing` | `{ conversationId, userId, userName, isTyping }` | Typing status of conversation partner |
+| `user_recording` | `{ conversationId, userId, userName, isRecording }` | Voice note recording status |
+| `user_status` | `{ userId, userType, isOnline, lastSeen }` | Online / offline status of users |
+| `conversation_updated` | `{ conversationId, lastMessage, preview }` | Unread count & conversation list preview update |
+
+---
+
+### 📋 Chat REST API Reference
+
+Base path: `/api/chat` (All endpoints require `Authorization: Bearer <token>` unless specified).
+
+| Method | Endpoint | Access | Description |
+|--------|----------|--------|-------------|
+| POST | `/api/chat/auth/trainer-login` | Public | Trainer login with email & password |
+| GET | `/api/chat/auth/me` | Protected | Current user identity (Admin or Trainer) |
+| GET | `/api/chat/trainers/active` | Admin | List active trainers available for chat |
+| POST | `/api/chat/conversations` | Protected | Start or get existing conversation |
+| GET | `/api/chat/conversations` | Protected | List conversations for current user |
+| GET | `/api/chat/conversations/:id` | Protected | Get single conversation details |
+| GET | `/api/chat/conversations/:id/messages` | Protected | Get messages with cursor pagination (`?before=&limit=30`) |
+| POST | `/api/chat/conversations/:id/messages` | Protected | Send message via REST (text, attachments, reply) |
+| PUT | `/api/chat/messages/:id` | Protected | Edit message |
+| DELETE | `/api/chat/messages/:id` | Protected | Delete message (`?deleteType=everyone` or `for_me`) |
+| PATCH | `/api/chat/conversations/:id/read` | Protected | Mark all messages as read (double blue ticks) |
+| POST | `/api/chat/upload` | Protected | Upload media or voice attachment (multipart/form-data) |
+| GET | `/api/chat/notifications` | Protected | Fetch unread chat notification toasts |
+| PATCH | `/api/chat/notifications/:id/read` | Protected | Mark specific toast notification as read |
+| PATCH | `/api/chat/notifications/mark-all-read` | Protected | Mark all toast notifications as read |
+| GET | `/api/chat/unread-summary` | Protected | Total unread count & per-conversation summary |
+
+---
+
+---
+
 ## 🖥️ Using the API in Your Dashboard
 
 ```javascript

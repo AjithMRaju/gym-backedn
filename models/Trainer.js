@@ -11,6 +11,7 @@ const trainerSchema = new mongoose.Schema(
       trim: true,
     },
     phone: { type: String, required: true },
+    password: { type: String, minlength: 6, select: false },
     photo: String,
     bio: String,
     experience: Number,
@@ -46,5 +47,17 @@ const trainerSchema = new mongoose.Schema(
   },
   { timestamps: true },
 );
+
+const bcrypt = require("bcryptjs");
+
+trainerSchema.pre("save", async function () {
+  if (!this.isModified("password") || !this.password) return;
+  this.password = await bcrypt.hash(this.password, 10);
+});
+
+trainerSchema.methods.matchPassword = async function (plain) {
+  if (!this.password) return false;
+  return bcrypt.compare(plain, this.password);
+};
 
 module.exports = mongoose.model("Trainer", trainerSchema);
